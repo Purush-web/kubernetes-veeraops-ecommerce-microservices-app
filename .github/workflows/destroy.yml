@@ -1,4 +1,4 @@
-name: infra Terraform
+name: Destroy Terraform
 
 on:
   workflow_dispatch:
@@ -10,3 +10,29 @@ env:
   BUCKET_NAME : purush-kubernetes-ecommerce
 
 jobs:
+  - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      # ----------------------------------------------------------
+      # AWS AUTHENTICATION
+      # ----------------------------------------------------------
+      - name: Configure AWS Credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Verify AWS Identity
+        run: |
+          aws sts get-caller-identity
+
+      # ----------------------------------------------------------
+      # TERRAFORM
+      # ----------------------------------------------------------
+      - name: Destroy Terraform
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: ${{ env.TF_VERSION }}
+
+      - name: Terraform Version
