@@ -1,0 +1,344 @@
+name: Terraform Infrastructure
+
+on:
+  workflow_dispatch:
+    inputs:
+      action:
+        description: 'Select Terraform Operation'
+        required: true
+        type: choice
+        options:
+          - plan-and-apply
+          - destroy
+        default: plan-and-apply
+
+      lock_id:
+        description: 'Stale Terraform Lock ID (optional)'
+        required: false
+        type: string
+        default: ''
+
+env:
+  AWS_REGION: us-east-1
+  TF_VERSION: "1.12.2"
+  TF_WORKING_DIR: EKS-Terraform
+  BUCKET_NAME: purush-kubernetes-ecommerce
+  EKS_CLUSTER_NAME: naresh
+
+# Prevent simultaneous Terraform operations
+concurrency:
+  group: terraform-eks
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+
+  # ============================================================
+  # JOB 1: TERRAFORM PLAN
+  # ============================================================
+
+  terraform-plan:
+    name: "1. Terraform Validate & Plan"
+    if: ${{ inputs.action == 'plan-and-apply' }}
+    runs-on: ubuntu-latest
+
+    steps:
+
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Configure AWS Credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Verify AWS Identity
+        run: aws sts get-caller-identity
+
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: ${{ env.TF_VERSION }}
+
+      # --------------------------------------------------------
+      # S3 BACKEND
+      # --------------------------------------------------------
+
+      - name: Create S3 Backend Bucket if Required
+        env:
+          BUCKET: ${{ env.BUCKET_NAME }}
+        run: |
+          set -euo pipefail
+
+          if aws s3api head-bucket --bucket "$BUCKET" 2>/dev/null; then
+            echo "S3 bucket already exists."
+          else
+            echo "Creating S3 bucket..."
+
+            aws s3api create-bucket \
+              --bucket "$BUCKET" \
+              --region "$AWS_REGION"
+
+            echo "S3 bucket created."
+          fi
+
+      - name: Enable S3 Versioning
+        run: |
+          aws s3api put-bucket-versioning \
+            --bucket "$BUCKET_NAME" \
+            --versioning-configuration Status=Enabled
+
+      - name: Enable S3 Encryption
+        run: |
+          aws s3api put-bucket-encryption \
+            --bucket "$BUCKET_NAME" \
+            --server-side-encryption-configuration \
+            '{"Rules":[{"ApplyServerSideEncryptionByDefault":{"SSEAlgorithm":"AES256"}}]}'
+
+      - name: Block Public S3 Access
+        run: |
+          aws s3api put-public-access-block \
+            --bucket "$BUCKET_NAME" \
+            --public-access-block-configuration \
+            BlockPublicAcls=true,IgnorePublicAcls=true,BlockPublicPolicy=true,RestrictPublicBuckets=true
+
+      - name: Verify S3 Backend
+        run: |
+          aws s3api head-bucket --bucket "$BUCKET_NAME"
+          echo "S3 backend is ready."
+
+      # --------------------------------------------------------
+      # TERRAFORM VALIDATION
+      # --------------------------------------------------------
+
+      - name: Terraform Init
+        working-directory: ${{ env.TF_WORKING_DIR }}
+        run: terraform init
+
+      - name: Terraform Format Check
+        working-directory: ${{ env.TF_WORKING_DIR }}
+        run: terraform fmt -check -recursive
+
+      - name: Terraform Validate
+        working-directory: ${{ env.TF_WORKING_DIR }}
+        run: terraform validate
+
+      - name: Terraform Plan
+        working-directory: ${{ env.TF_WORKING_DIR }}
+        run: terraform plan -lock-timeout=5m -out=tfplan
+
+      - name: Upload Terraform Plan
+        uses: actions/upload-artifact@v4
+        with:
+          name: terraform-plan
+          path: EKS-Terraform/tfplan
+          retention-days: 1
+
+      - name: Plan Summary
+        if: always()
+        run: |
+          echo "## Terraform Plan" >> $GITHUB_STEP_SUMMARY
+          echo "Status: **${{ job.status }}**" >> $GITHUB_STEP_SUMMARY
+          echo "Region: $AWS_REGION" >> $GITHUB_STEP_SUMMARY
+          echo "S3 Backend: $BUCKET_NAME" >> $GITHUB_STEP_SUMMARY
+
+
+  # ============================================================
+  # JOB 2: TERRAFORM APPLY
+  # ============================================================
+
+  terraform-apply:
+    name: "2. Terraform Apply"
+    if: ${{ inputs.action == 'plan-and-apply' }}
+    needs: terraform-plan
+    runs-on: ubuntu-latest
+
+    environment:
+      name: production
+
+    steps:
+
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Configure AWS Credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Verify AWS Identity
+        run: aws sts get-caller-identity
+
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: ${{ env.TF_VERSION }}
+
+      - name: Terraform Init
+        working-directory: ${{ env.TF_WORKING_DIR }}
+        run: terraform init
+
+      - name: Download Terraform Plan
+        uses: actions/download-artifact@v4
+        with:
+          name: terraform-plan
+          path: EKS-Terraform
+
+      - name: Terraform Apply
+        working-directory: ${{ env.TF_WORKING_DIR }}
+        run: terraform apply -lock-timeout=5m -auto-approve tfplan
+
+      - name: Terraform Outputs
+        working-directory: ${{ env.TF_WORKING_DIR }}
+        run: terraform output
+
+      - name: Apply Summary
+        if: always()
+        run: |
+          echo "## Terraform Apply" >> $GITHUB_STEP_SUMMARY
+          echo "Status: **${{ job.status }}**" >> $GITHUB_STEP_SUMMARY
+
+
+  # ============================================================
+  # JOB 3: EKS CLUSTER VERIFICATION
+  # ============================================================
+
+  eks-verification:
+    name: "3. EKS Cluster Verification"
+    needs: terraform-apply
+    if: ${{ inputs.action == 'plan-and-apply' && needs.terraform-apply.result == 'success' }}
+    runs-on: ubuntu-latest
+
+    steps:
+
+      - name: Configure AWS Credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Setup kubectl
+        uses: azure/setup-kubectl@v4
+        with:
+          version: 'v1.35.0'
+
+      - name: Verify EKS Cluster
+        run: |
+          aws eks wait cluster-active \
+            --name "$EKS_CLUSTER_NAME" \
+            --region "$AWS_REGION"
+
+          aws eks describe-cluster \
+            --name "$EKS_CLUSTER_NAME" \
+            --region "$AWS_REGION" \
+            --query "cluster.status" \
+            --output text
+
+      - name: Configure kubectl
+        run: |
+          aws eks update-kubeconfig \
+            --region "$AWS_REGION" \
+            --name "$EKS_CLUSTER_NAME"
+
+      - name: Verify Worker Nodes
+        run: |
+          kubectl wait nodes \
+            --all \
+            --for=condition=Ready \
+            --timeout=10m
+
+          kubectl get nodes -o wide
+
+      - name: Verify CoreDNS Add-on
+        run: |
+          aws eks wait addon-active \
+            --cluster-name "$EKS_CLUSTER_NAME" \
+            --addon-name coredns \
+            --region "$AWS_REGION"
+
+          echo "CoreDNS is ACTIVE."
+
+      - name: Verify EBS CSI Add-on
+        run: |
+          aws eks wait addon-active \
+            --cluster-name "$EKS_CLUSTER_NAME" \
+            --addon-name aws-ebs-csi-driver \
+            --region "$AWS_REGION"
+
+          echo "EBS CSI Driver is ACTIVE."
+
+      - name: Verify Kubernetes System Pods
+        run: |
+          kubectl get pods -n kube-system -o wide
+
+      - name: EKS Deployment Summary
+        if: always()
+        run: |
+          echo "## EKS Deployment Verification" >> $GITHUB_STEP_SUMMARY
+          echo "Verification Status: **${{ job.status }}**" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "### Cluster" >> $GITHUB_STEP_SUMMARY
+          echo "Cluster: $EKS_CLUSTER_NAME" >> $GITHUB_STEP_SUMMARY
+          echo "Region: $AWS_REGION" >> $GITHUB_STEP_SUMMARY
+
+
+  # ============================================================
+  # JOB 4: TERRAFORM DESTROY
+  # ============================================================
+
+  terraform-destroy:
+    name: "4. Terraform Destroy"
+    if: ${{ inputs.action == 'destroy' }}
+    runs-on: ubuntu-latest
+
+    environment:
+      name: production
+
+    steps:
+
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Configure AWS Credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Verify AWS Identity
+        run: aws sts get-caller-identity
+
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: ${{ env.TF_VERSION }}
+
+      - name: Terraform Init
+        working-directory: ${{ env.TF_WORKING_DIR }}
+        run: terraform init
+
+      - name: Remove Stale Terraform Lock
+        if: ${{ inputs.lock_id != '' }}
+        working-directory: ${{ env.TF_WORKING_DIR }}
+        env:
+          LOCK_ID: ${{ inputs.lock_id }}
+        run: terraform force-unlock -force "$LOCK_ID"
+
+      - name: Terraform Destroy
+        working-directory: ${{ env.TF_WORKING_DIR }}
+        run: terraform destroy -lock-timeout=5m -auto-approve
+
+      - name: Destroy Summary
+        if: always()
+        run: |
+          echo "## Terraform Destroy" >> $GITHUB_STEP_SUMMARY
+          echo "Status: **${{ job.status }}**" >> $GITHUB_STEP_SUMMARY
+          echo "Infrastructure destruction workflow completed." >> $GITHUB_STEP_SUMMARY
