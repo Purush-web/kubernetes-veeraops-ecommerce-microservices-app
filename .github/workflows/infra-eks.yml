@@ -7,7 +7,7 @@ env:
   AWS_REGION: us-east-1
   TF_VERSION: "1.12.2"
   TF_WORKING_DIR: EKS-Terraform
-  BUCKET_NAME : Purush_kubernetes_ecommerce
+  BUCKET_NAME : purush-kubernetes-ecommerce
 
 jobs:
 
