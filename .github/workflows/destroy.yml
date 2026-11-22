@@ -1,1 +1,12 @@
+name: infra Terraform
 
+on:
+  workflow_dispatch:
+
+env:
+  AWS_REGION: us-east-1
+  TF_VERSION: "1.12.2"
+  TF_WORKING_DIR: EKS-Terraform
+  BUCKET_NAME : purush-kubernetes-ecommerce
+
+jobs:
