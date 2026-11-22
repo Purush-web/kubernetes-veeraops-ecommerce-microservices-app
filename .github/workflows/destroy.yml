@@ -14,14 +14,13 @@ concurrency:
 
 jobs:
   destroy:
+    name: Destroy EKS Infrastructure
     runs-on: ubuntu-latest
 
     steps:
-      # Checkout Repository
       - name: Checkout Repository
         uses: actions/checkout@v4
 
-      # AWS Authentication
       - name: Configure AWS Credentials
         uses: aws-actions/configure-aws-credentials@v4
         with:
@@ -29,24 +28,14 @@ jobs:
           aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
           aws-region: ${{ env.AWS_REGION }}
 
-      # Setup Terraform
       - name: Setup Terraform
         uses: hashicorp/setup-terraform@v3
         with:
           terraform_version: ${{ env.TF_VERSION }}
 
-      # Initialize Terraform
       - name: Terraform Init
         working-directory: ${{ env.TF_WORKING_DIR }}
         run: terraform init
-
-      # Remove Previous Stale Lock
-      - name: Terraform Force Unlock
-        working-directory: ${{ env.TF_WORKING_DIR }}
-        run: |
-          terraform force-unlock -force b60c9ebf-c926-5435-c1a2-ff7047c2ec54
-
-      # Destroy Infrastructure
       - name: Terraform Destroy
         working-directory: ${{ env.TF_WORKING_DIR }}
         run: terraform destroy -auto-approve
