@@ -229,6 +229,13 @@ resource "aws_iam_role_policy_attachment" "ecr" {
   policy_arn = "arn:aws:iam::aws:policy/AmazonEC2ContainerRegistryReadOnly"
 }
 
+# SSM permission for Session Manager
+resource "aws_iam_role_policy_attachment" "ssm" {
+
+  role       = aws_iam_role.worker_role.name
+  policy_arn = "arn:aws:iam::aws:policy/AmazonSSMManagedInstanceCore"
+}
+
 ############################
 # EKS CLUSTER
 ############################
