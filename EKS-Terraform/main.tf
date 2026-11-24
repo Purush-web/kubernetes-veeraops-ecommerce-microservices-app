@@ -339,7 +339,7 @@ resource "aws_instance" "eks" {
   instance_type          = "t3.micro"
   subnet_id              = aws_subnet.public1.id
   vpc_security_group_ids = [aws_security_group.allow_all.id]
-  iam_instance_profile = aws_iam_instance_profile.bastion_profile.name
+  iam_instance_profile   = aws_iam_instance_profile.bastion_profile.name
   root_block_device {
     volume_size = "30"
   }
