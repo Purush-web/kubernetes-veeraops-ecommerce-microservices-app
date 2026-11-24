@@ -237,6 +237,38 @@ resource "aws_iam_role_policy_attachment" "ssm" {
 }
 
 ############################
+# IAM ROLE - BASTION HOST
+############################
+
+resource "aws_iam_role" "bastion_role" {
+
+  name = "eks-bastion-ssm-role"
+
+  assume_role_policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [{
+      Effect = "Allow"
+      Principal = {
+        Service = "ec2.amazonaws.com"
+      }
+      Action = "sts:AssumeRole"
+    }]
+  })
+}
+
+resource "aws_iam_role_policy_attachment" "bastion_ssm" {
+
+  role       = aws_iam_role.bastion_role.name
+  policy_arn = "arn:aws:iam::aws:policy/AmazonSSMManagedInstanceCore"
+}
+
+resource "aws_iam_instance_profile" "bastion_profile" {
+
+  name = "eks-bastion-instance-profile"
+  role = aws_iam_role.bastion_role.name
+}
+
+############################
 # EKS CLUSTER
 ############################
 
@@ -307,6 +339,7 @@ resource "aws_instance" "eks" {
   instance_type          = "t3.micro"
   subnet_id              = aws_subnet.public1.id
   vpc_security_group_ids = [aws_security_group.allow_all.id]
+  iam_instance_profile = aws_iam_instance_profile.bastion_profile.name
   root_block_device {
     volume_size = "30"
   }
